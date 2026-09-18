@@ -1,10 +1,11 @@
 import os
 import logging
-import asyncio
+import threading
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Logging ayarları
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -13,12 +14,17 @@ logging.basicConfig(
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
 
-# Render'ın port kontrolü için Flask
+# Render port kontrolü için Flask uygulaması
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def health_check():
     return "Bot is running!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    # Flask sunucusunu başlat
+    app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -51,7 +57,7 @@ async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Bir hata oluştu: {str(e)}")
 
-async def run_bot():
+def run_telegram_bot():
     if not TELEGRAM_BOT_TOKEN:
         print("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
@@ -61,16 +67,14 @@ async def run_bot():
     app.add_handler(CommandHandler("durum", durum))
     app.add_handler(CommandHandler("oranlar", oranlar))
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
     print("Telegram botu başlatıldı!")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    # Event loop alıp botu arka planda başlatıyoruz
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_bot())
-    
-    # Render'ın beklediği Flask web sunucusunu ana kanalda çalıştırıyoruz
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port)
+    # Flask'ı arka planda bir thread içinde başlatıyoruz
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # Botu ana süreçte çalıştırıyoruz
+    run_telegram_bot()
