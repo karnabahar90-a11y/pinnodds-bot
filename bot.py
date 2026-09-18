@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -14,7 +15,7 @@ logging.basicConfig(
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
 
-# Render port kontrolü için Flask uygulaması
+# Render port doğrulaması için Flask uygulaması
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -23,7 +24,6 @@ def health_check():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    # Flask sunucusunu başlat
     app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,19 +62,23 @@ def run_telegram_bot():
         print("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
 
+    # Yeni bir asyncio event loop oluşturup botu bu kanalda çalıştırıyoruz
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("durum", durum))
     app.add_handler(CommandHandler("oranlar", oranlar))
 
     print("Telegram botu başlatıldı!")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
-    # Flask'ı arka planda bir thread içinde başlatıyoruz
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
+    # Telegram botunu ayrı bir thread içinde başlatıyoruz
+    bot_thread = threading.Thread(target=run_telegram_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
 
-    # Botu ana süreçte çalıştırıyoruz
-    run_telegram_bot()
+    # Flask web sunucusunu ana thread üzerinde çalıştırıyoruz
+    run_flask()
