@@ -1,11 +1,10 @@
 import os
 import logging
-import threading
+import asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Logging ayarları
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -14,34 +13,30 @@ logging.basicConfig(
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
 
-# Render Web Service port kontrolü için Flask sunucusu
+# Render'ın port kontrolü için Flask
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def health_check():
     return "Bot is running!", 200
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 PinnOdds Botuna Hoş Geldiniz!\n\n"
-        "Kullanılabilir komutlar:\n"
+        "Komutlar:\n"
         "/oranlar - Güncel PinnOdds oranlarını getirir.\n"
         "/durum - Botun çalışma durumunu kontrol eder."
     )
 
 async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot Render üzerinde 7/24 sorunsuz çalışıyor!")
+    await update.message.reply_text("✅ Bot Render üzerinde 7/24 ücretsiz olarak çalışıyor!")
 
 async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
-        await update.message.reply_text("❌ PinnOdds API anahtarı sistemde bulunamadı.")
+        await update.message.reply_text("❌ PinnOdds API anahtarı bulunamadı.")
         return
 
-    await update.message.reply_text("⏳ PinnOdds verileri çekiliyor, lütfen bekleyin...")
+    await update.message.reply_text("⏳ PinnOdds verileri çekiliyor...")
     try:
         import requests
         url = "https://api.pinnodds.com/v1/odds"
@@ -56,22 +51,26 @@ async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Bir hata oluştu: {str(e)}")
 
-def main():
+async def run_bot():
     if not TELEGRAM_BOT_TOKEN:
         print("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
 
-    # Flask web sunucusunu arka planda başlat
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    # Telegram bot uygulamasını başlat
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("durum", durum))
     app.add_handler(CommandHandler("oranlar", oranlar))
 
-    print("Bot çalışıyor...")
-    app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    print("Telegram botu başlatıldı!")
 
 if __name__ == "__main__":
-    main()
+    # Event loop alıp botu arka planda başlatıyoruz
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_bot())
+    
+    # Render'ın beklediği Flask web sunucusunu ana kanalda çalıştırıyoruz
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port)
