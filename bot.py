@@ -33,7 +33,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 PinnOdds Analiz Botu Aktif!\n\n"
         "Komutlar:\n"
-        "/maclar - Gelecek oranlı 10 maçı ve yüzdelikleri listeler.\n"
+        "/maclar - Gelecek oranlı 20 maçı ve yüzdelikleri listeler.\n"
         "/ara [takım] - Takım arar."
     )
 
@@ -200,7 +200,7 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API anahtarı eksik.")
         return
 
-    sent_msg = await update.message.reply_text("⏳ Gelecek 10 oranlı maç filtreleniyor...")
+    sent_msg = await update.message.reply_text("⏳ Gelecek 20 oranlı maç filtreleniyor...")
     try:
         events = fetch_data()
         if not events:
@@ -211,8 +211,8 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        msg = f"⚽ **GELECEK 10 ORANLI MAÇ VE ANALİZ** ⚽\n───────────────────\n\n"
-        for m in events[:10]:
+        msg = f"⚽ **GELECEK 20 ORANLI MAÇ VE ANALİZ** ⚽\n───────────────────\n\n"
+        for m in events[:20]:
             msg += build_card(m) + "\n"
         
         await context.bot.edit_message_text(
@@ -256,7 +256,7 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         msg = f"🔎 **ARAMA: {query.upper()}**\n───────────────────\n\n"
-        for m in matches[:10]:
+        for m in matches[:20]:
             msg += build_card(m) + "\n"
             
         await context.bot.edit_message_text(
