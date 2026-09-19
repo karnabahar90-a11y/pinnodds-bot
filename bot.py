@@ -44,36 +44,64 @@ def calculate_prob(odd):
         pass
     return "-"
 
-def extract_odds_value(data, keys):
-    """Farklı API formatlarındaki oran değerlerini bulur"""
-    for key in keys:
-        if isinstance(data, dict) and key in data and data[key] is not None:
-            return data[key]
-    return "-"
+def get_market_odds(periods):
+    """PinnOdds V1 yapısından 1X2 ve Alt/Üst oranlarını çeker"""
+    odds = {
+        "1": "-", "X": "-", "2": "-",
+        "o15": "-", "u15": "-",
+        "o25": "-", "u25": "-",
+        "o35": "-", "u35": "-"
+    }
+    
+    if not periods or not isinstance(periods, dict):
+        return odds
+
+    # Genelde period 'num_0' veya '0' anahtarındadır (Match Full Time)
+    match_period = periods.get("num_0", periods.get("0", list(periods.values())[0] if periods else {}))
+    
+    # 1. Moneyline / 1X2 Market
+    moneyline = match_period.get("moneyline", {})
+    if moneyline:
+        odds["1"] = moneyline.get("home", "-")
+        odds["X"] = moneyline.get("draw", "-")
+        odds["2"] = moneyline.get("away", "-")
+
+    # 2. Totals / Alt-Üst Marketleri
+    totals = match_period.get("totals", {})
+    if isinstance(totals, dict):
+        for line, data in totals.items():
+            line_str = str(line)
+            if line_str == "1.5":
+                odds["o15"] = data.get("over", "-")
+                odds["u15"] = data.get("under", "-")
+            elif line_str == "2.5":
+                odds["o25"] = data.get("over", "-")
+                odds["u25"] = data.get("under", "-")
+            elif line_str == "3.5":
+                odds["o35"] = data.get("over", "-")
+                odds["u35"] = data.get("under", "-")
+                
+    return odds
 
 async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
         await update.message.reply_text("❌ PinnOdds API anahtarı bulunamadı.")
         return
 
-    await update.message.reply_text("⏳ Başlamamış maçlar ve oranlar analiz ediliyor...")
+    await update.message.reply_text("⏳ Başlamamış maçlar, oranlar ve olasılıklar çekiliyor...")
     try:
         import requests
+        # Ekran görüntünüzdeki Tam Doğru Endpoint Path
+        url = "https://pinnodds.com/kit/v1/prematch/fixtures?sport_id=1"
         headers = {"x-portal-apikey": PINNODDS_API_KEY}
         
-        # PinnOdds Pre-match Endpoint
-        url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=0&max_age_sec=86400"
         response = requests.get(url, headers=headers, timeout=12)
         
         if response.status_code == 200:
             res_json = response.json()
-            
-            if isinstance(res_json, dict):
-                items = res_json.get("data", res_json.get("events", res_json.get("drops", [])))
-            else:
-                items = res_json
+            events = res_json.get("events", [])
 
-            if not items:
+            if not events:
                 await update.message.reply_text("⚠️ Görüntülenecek maç verisi bulunamadı.")
                 return
 
@@ -83,56 +111,33 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             now = datetime.now(timezone.utc)
             count = 0
 
-            for item in items:
-                if count >= 5:
+            for event in events:
+                if count >= 5: # Telegram sınırını zorlamamak için ilk 5 maç
                     break
 
-                # 1. Başlama zamanı kontrolü (Başlamış maçları eleme)
-                match_time_str = item.get("starts_at", item.get("match_time", item.get("start_time")))
-                if match_time_str:
+                # Başlama saati kontrolü (Başlamış maçları eleme)
+                starts_at = event.get("starts_at", event.get("starts", ""))
+                if starts_at:
                     try:
-                        # ISO format çözümleme
-                        clean_time = match_time_str.replace("Z", "+00:00")
+                        clean_time = starts_at.replace("Z", "+00:00")
                         match_dt = datetime.fromisoformat(clean_time)
                         if match_dt < now:
-                            continue  # Maç başlamışsa atla
+                            continue  # Maç zaten başladıysa listeye alma
                     except Exception:
                         pass
 
-                # Takım ve Lig bilgileri
-                event = item.get("event", item)
-                home = event.get("home_team", event.get("home", "Ev Sahibi"))
-                away = event.get("away_team", event.get("away", "Deplasman"))
+                home = event.get("home", event.get("home_team", "Ev Sahibi"))
+                away = event.get("away", event.get("away_team", "Deplasman"))
                 league = event.get("league_name", event.get("league", "Futbol Ligi"))
 
-                # Oran verileri (Derinlemesine arama)
-                odds = item.get("odds", item)
-                
-                # 1X2 Oranları Çekme
-                m1 = extract_odds_value(odds, ["home", "home_odds", "price_home", "1", "to"])
-                mx = extract_odds_value(odds, ["draw", "draw_odds", "price_draw", "X"])
-                m2 = extract_odds_value(odds, ["away", "away_odds", "price_away", "2"])
-                
-                # Eğer tekil drop nesnesinden geliyorsa:
-                if m1 == "-" and item.get("selection") == "home":
-                    m1 = item.get("to", "-")
-                elif m2 == "-" and item.get("selection") == "away":
-                    m2 = item.get("to", "-")
+                # Oranları Ayrıştır
+                periods = event.get("periods", {})
+                odds = get_market_odds(periods)
 
-                # Olasılıklar
-                p1 = calculate_prob(m1)
-                px = calculate_prob(mx)
-                p2 = calculate_prob(m2)
-
-                # Alt / Üst Oranları
-                o1_5 = extract_odds_value(odds, ["over_1_5", "o15", "over15"])
-                u1_5 = extract_odds_value(odds, ["under_1_5", "u15", "under15"])
-                
-                o2_5 = extract_odds_value(odds, ["over_2_5", "o25", "over25"])
-                u2_5 = extract_odds_value(odds, ["under_2_5", "u25", "under25"])
-                
-                o3_5 = extract_odds_value(odds, ["over_3_5", "o35", "over35"])
-                u3_5 = extract_odds_value(odds, ["under_3_5", "u35", "under35"])
+                # Kazanma Olasılıkları Hesapla
+                p1 = calculate_prob(odds["1"])
+                px = calculate_prob(odds["X"])
+                p2 = calculate_prob(odds["2"])
 
                 msg += f"🏆 **{league}**\n"
                 msg += f"⚔️ **{home} vs {away}**\n\n"
@@ -141,18 +146,18 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"• Ev Sahibi: {p1} | Beraberlik: {px} | Deplasman: {p2}\n\n"
                 
                 msg += f"1️⃣ **MS (1X2) Oranları:**\n"
-                msg += f"• MS 1: {m1} | MS X: {mx} | MS 2: {m2}\n\n"
+                msg += f"• MS 1: {odds['1']} | MS X: {odds['X']} | MS 2: {odds['2']}\n\n"
                 
                 msg += f"⚽ **Alt / Üst Oranları:**\n"
-                msg += f"• 1.5 Alt: {u1_5} | 1.5 Üst: {o1_5}\n"
-                msg += f"• 2.5 Alt: {u2_5} | 2.5 Üst: {o2_5}\n"
-                msg += f"• 3.5 Alt: {u3_5} | 3.5 Üst: {o3_5}\n"
+                msg += f"• 1.5 Alt: {odds['u15']} | 1.5 Üst: {odds['o15']}\n"
+                msg += f"• 2.5 Alt: {odds['u25']} | 2.5 Üst: {odds['o25']}\n"
+                msg += f"• 3.5 Alt: {odds['u35']} | 3.5 Üst: {odds['o35']}\n"
                 msg += "───────────────────\n\n"
                 
                 count += 1
 
             if count == 0:
-                await update.message.reply_text("⚠️ Şu anda başlamamış bülten maçı bulunamadı.")
+                await update.message.reply_text("⚠️ Şu an için başlamamış bülten maçı kalmadı.")
                 return
 
             await update.message.reply_text(msg, parse_mode="Markdown")
