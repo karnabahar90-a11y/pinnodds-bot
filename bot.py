@@ -1,11 +1,11 @@
 import os
 import logging
 import threading
-import asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Logging ayarları
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -14,6 +14,7 @@ logging.basicConfig(
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
 
+# Render port doğrulaması için Flask uygulaması
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -22,6 +23,7 @@ def health_check():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
+    # Flask sunucusunu sessizce arka planda çalıştır
     app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,7 +45,6 @@ async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Pinnacle Düşen Oran Verileri Çekiliyor...")
     try:
         import requests
-        # PinnacleOddsAPI doğru endpoint ve header kullanımı
         url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=2&max_age_sec=10800"
         headers = {"x-portal-apikey": PINNODDS_API_KEY}
         
@@ -72,24 +73,23 @@ async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Bağlantı hatası: {str(e)}")
 
-def run_telegram_bot():
+def main():
     if not TELEGRAM_BOT_TOKEN:
         print("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # 1. Flask'ı arka planda bir thread içinde başlatıyoruz
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
 
+    # 2. Telegram Botunu ANA THREAD üzerinde çalıştırıyoruz
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("durum", durum))
     app.add_handler(CommandHandler("oranlar", oranlar))
 
-    app.run_polling(drop_pending_updates=True, close_loop=False)
+    print("Telegram botu başlatılıyor...")
+    app.run_polling(drop_pending_updates=True, stop_signals=None)
 
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_telegram_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-
-    run_flask()
+    main()
