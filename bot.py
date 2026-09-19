@@ -28,27 +28,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 PinnOdds Analiz Botuna Hoş Geldiniz!\n\n"
         "Komutlar:\n"
-        "/maclar - Yaklaşan başlamamış maçları, 1X2 oranlarını ve yüzde olasılıklarını getirir.\n"
-        "/ara takım_adı - Belirttiğiniz takımın maçını ve oranlarını arar.\n"
-        "/durum - Botun aktiflik durumunu kontrol eder."
+        "/maclar - Yaklaşan maçları, 1X2 ve Alt/Üst oranları ile olasılık yüzdelerini getirir.\n"
+        "/ara takım_adı - İstediğiniz takımı arar (Örn: /ara Puebla).\n"
+        "/durum - Botun çalışma durumunu gösterir."
     )
 
 async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Bot Render üzerinde 7/24 aktif çalışıyor!")
 
 def calculate_prob(odd):
-    """Orandan yüzde olasılık hesaplama"""
     try:
         val = float(odd)
         if val > 1.0:
-            prob = (1 / val) * 100
-            return f"%{round(prob, 1)}"
+            return f"%{round((1 / val) * 100, 1)}"
     except (ValueError, TypeError):
         pass
     return "-"
 
-def get_complete_odds(event):
-    """1X2 ve Alt/Üst oranlarını API yanıtından eksiksiz çeker"""
+def get_event_details(event_id):
+    """Prematch Event endpoint'inden 1X2 ve Alt/Üst oranlarını eksiksiz çeker"""
+    import requests
+    url = f"https://pinnodds.com/kit/v1/prematch/event?event_id={event_id}"
+    headers = {"x-portal-apikey": PINNODDS_API_KEY}
+    
     odds = {
         "1": "-", "X": "-", "2": "-",
         "o15": "-", "u15": "-",
@@ -56,67 +58,57 @@ def get_complete_odds(event):
         "o35": "-", "u35": "-"
     }
     
-    # 1. Objenin doğrudan üzerindeki anahtar kontrolleri
-    if "home_odds" in event: odds["1"] = event["home_odds"]
-    if "draw_odds" in event: odds["X"] = event["draw_odds"]
-    if "away_odds" in event: odds["2"] = event["away_odds"]
+    try:
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            periods = data.get("periods", {})
+            p0 = periods.get("num_0", periods.get("0", {}))
+            if not p0 and isinstance(periods, dict) and len(periods) > 0:
+                p0 = list(periods.values())[0]
 
-    # 2. Periyot taraması (num_0 / period_0 = Maç Sonu)
-    periods = event.get("periods", event.get("markets", {}))
-    if isinstance(periods, dict):
-        p0 = periods.get("num_0", periods.get("0", periods.get("period_0", {})))
-        if not p0 and len(periods) > 0:
-            p0 = list(periods.values())[0]
+            if isinstance(p0, dict):
+                # 1X2 Oranları
+                ml = p0.get("moneyline", {})
+                if isinstance(ml, dict):
+                    odds["1"] = ml.get("home", ml.get("1", "-"))
+                    odds["X"] = ml.get("draw", ml.get("x", "-"))
+                    odds["2"] = ml.get("away", ml.get("2", "-"))
 
-        if isinstance(p0, dict):
-            # Moneyline (1X2)
-            ml = p0.get("moneyline", p0.get("1x2", p0.get("win_draw_win", {})))
-            if isinstance(ml, dict):
-                if odds["1"] == "-": odds["1"] = ml.get("home", ml.get("1", "-"))
-                if odds["X"] == "-": odds["X"] = ml.get("draw", ml.get("x", "-"))
-                if odds["2"] == "-": odds["2"] = ml.get("away", ml.get("2", "-"))
-
-            # Totals (Alt / Üst)
-            totals = p0.get("totals", {})
-            if isinstance(totals, dict):
-                for line_key, data in totals.items():
-                    line_str = str(line_key)
-                    if isinstance(data, dict):
-                        o_val = data.get("over", "-")
-                        u_val = data.get("under", "-")
-                        if line_str in ["1.5", "15"]:
-                            odds["o15"], odds["u15"] = o_val, u_val
-                        elif line_str in ["2.5", "25"]:
-                            odds["o25"], odds["u25"] = o_val, u_val
-                        elif line_str in ["3.5", "35"]:
-                            odds["o35"], odds["u35"] = o_val, u_val
+                # Alt / Üst Oranları
+                totals = p0.get("totals", {})
+                if isinstance(totals, dict):
+                    for line, tdata in totals.items():
+                        line_str = str(line)
+                        if isinstance(tdata, dict):
+                            o_val = tdata.get("over", "-")
+                            u_val = tdata.get("under", "-")
+                            if line_str in ["1.5", "15"]:
+                                odds["o15"], odds["u15"] = o_val, u_val
+                            elif line_str in ["2.5", "25"]:
+                                odds["o25"], odds["u25"] = o_val, u_val
+                            elif line_str in ["3.5", "35"]:
+                                odds["o35"], odds["u35"] = o_val, u_val
+    except Exception:
+        pass
 
     return odds
 
-def fetch_and_sort_matches():
+def fetch_matches():
     import requests
     headers = {"x-portal-apikey": PINNODDS_API_KEY}
+    url = "https://pinnodds.com/kit/v1/prematch/fixtures?sport_id=1"
     
-    # Drops Endpoint'i 1X2 Oranlarını Tam Verir
-    url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=0&max_age_sec=86400"
-    response = requests.get(url, headers=headers, timeout=10)
-    
-    events = []
-    if response.status_code == 200:
-        res_json = response.json()
-        events = res_json.get("data", res_json.get("events", res_json.get("drops", [])))
-    else:
-        # Yedek Fikstür Endpoint'i
-        url_alt = "https://pinnodds.com/kit/v1/prematch/fixtures?sport_id=1"
-        res_alt = requests.get(url_alt, headers=headers, timeout=10)
-        if res_alt.status_code == 200:
-            events = res_alt.json().get("events", [])
+    res = requests.get(url, headers=headers, timeout=10)
+    if res.status_code != 200:
+        return None, res.status_code
 
+    events = res.json().get("events", [])
     now = datetime.now(timezone.utc)
     valid_events = []
 
     for ev in events:
-        starts_at = ev.get("starts_at", ev.get("starts", ev.get("start_time", "")))
+        starts_at = ev.get("starts_at", ev.get("starts", ""))
         match_dt = None
         if starts_at:
             try:
@@ -125,29 +117,28 @@ def fetch_and_sort_matches():
             except Exception:
                 pass
         
-        # Başlamış maçları filtrele
         if match_dt and match_dt < now:
             continue
         
         ev["parsed_dt"] = match_dt
         valid_events.append(ev)
 
-    # Saat sırasına göre kronolojik diz (En yakın maç en üstte)
     valid_events.sort(key=lambda x: x["parsed_dt"] if x["parsed_dt"] else datetime.max.replace(tzinfo=timezone.utc))
     return valid_events, 200
 
-def format_match_card(match):
-    home = match.get("home", match.get("home_team", "Ev Sahibi"))
-    away = match.get("away", match.get("away_team", "Deplasman"))
-    league = match.get("league_name", match.get("league", "Futbol Ligi"))
+def format_card(match):
+    home = match.get("home", "Ev Sahibi")
+    away = match.get("away", "Deplasman")
+    league = match.get("league_name", "Futbol Ligi")
+    event_id = match.get("id")
     
     time_str = "Saat Bilinmiyor"
     if match.get("parsed_dt"):
         time_str = match["parsed_dt"].strftime("%H:%M (%d.%m.%Y)")
 
-    odds = get_complete_odds(match)
+    # Detay endpoint'inden oranları al
+    odds = get_event_details(event_id)
     
-    # Gerçekleşecek Senaryoların Olasılık Yüzdeleri
     p1 = calculate_prob(odds["1"])
     px = calculate_prob(odds["X"])
     p2 = calculate_prob(odds["2"])
@@ -155,10 +146,8 @@ def format_match_card(match):
     card = f"⏰ **Saat:** {time_str}\n"
     card += f"🏆 **{league}**\n"
     card += f"⚔️ **{home} vs {away}**\n\n"
-    card += f"📊 **Gerçekleşme Olasılık Yüzdeleri:**\n"
-    card += f"• Ev Sahibi Galibiyeti: **{p1}**\n"
-    card += f"• Beraberlik: **{px}**\n"
-    card += f"• Deplasman Galibiyeti: **{p2}**\n\n"
+    card += f"📊 **Kazanma Olasılık Yüzdeleri:**\n"
+    card += f"• Ev Sahibi: **{p1}** | Beraberlik: **{px}** | Deplasman: **{p2}**\n\n"
     card += f"1️⃣ **MS (1X2) Oranları:**\n"
     card += f"• MS 1: {odds['1']} | MS X: {odds['X']} | MS 2: {odds['2']}\n\n"
     card += f"⚽ **Alt / Üst Oranları:**\n"
@@ -170,60 +159,55 @@ def format_match_card(match):
 
 async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
-        await update.message.reply_text("❌ PINNODDS_API_KEY tanımlı değil.")
+        await update.message.reply_text("❌ API anahtarı yok.")
         return
 
-    await update.message.reply_text("⏳ Yaklaşan maçlar ve olasılık yüzdeleri hesaplanıyor...")
+    await update.message.reply_text("⏳ En yakın maçlar ve 1X2/Alt-Üst oranları çekiliyor...")
     try:
-        events, status = fetch_and_sort_matches()
+        events, status = fetch_matches()
         if status != 200 or not events:
-            await update.message.reply_text("⚠️ Görüntülenecek başlamamış maç verisi bulunamadı.")
+            await update.message.reply_text("⚠️ Başlamamış maç bulunamadı.")
             return
 
-        msg = "⚽ **YAKLAŞAN MAÇLAR VE OLASILIK YÜZDELERİ** ⚽\n"
+        msg = "⚽ **YAKLAŞAN MAÇLAR VE ORANLAR** ⚽\n"
         msg += "───────────────────\n\n"
 
         for match in events[:5]:
-            msg += format_match_card(match) + "\n"
+            msg += format_card(match) + "\n"
 
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ Bağlantı hatası: {str(e)}")
+        await update.message.reply_text(f"❌ Hata: {str(e)}")
 
 async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
-        await update.message.reply_text("❌ PINNODDS_API_KEY tanımlı değil.")
+        await update.message.reply_text("❌ API anahtarı yok.")
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ Lütfen bir takım adı yazın.\nÖrnek: `/ara Puebla`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Takım adı yazın. Örnek: `/ara Puebla`", parse_mode="Markdown")
         return
 
     query = " ".join(context.args).lower()
     await update.message.reply_text(f"🔍 '{query}' aranıyor...")
 
     try:
-        events, status = fetch_and_sort_matches()
+        events, status = fetch_matches()
         if status != 200 or not events:
-            await update.message.reply_text("⚠️ Maç verisi bulunamadı.")
+            await update.message.reply_text("⚠️ Maç bulunamadı.")
             return
 
-        matches = []
-        for ev in events:
-            home = str(ev.get("home", ev.get("home_team", ""))).lower()
-            away = str(ev.get("away", ev.get("away_team", ""))).lower()
-            if query in home or query in away:
-                matches.append(ev)
+        matches = [ev for ev in events if query in str(ev.get("home", "")).lower() or query in str(ev.get("away", "")).lower()]
 
         if not matches:
-            await update.message.reply_text(f"🔍 '{query}' takımı için başlamamış maç bulunamadı.")
+            await update.message.reply_text(f"🔍 '{query}' için başlamamış maç bulunamadı.")
             return
 
         msg = f"🔎 **ARAMA SONUÇLARI ({query.upper()})** 🔎\n"
         msg += "───────────────────\n\n"
 
         for match in matches[:5]:
-            msg += format_match_card(match) + "\n"
+            msg += format_card(match) + "\n"
 
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
@@ -244,7 +228,7 @@ def main():
     app.add_handler(CommandHandler("maclar", maclar))
     app.add_handler(CommandHandler("ara", ara))
 
-    print("Telegram botu başlatılıyor...")
+    print("Bot başlatılıyor...")
     app.run_polling(drop_pending_updates=True, stop_signals=None)
 
 if __name__ == "__main__":
