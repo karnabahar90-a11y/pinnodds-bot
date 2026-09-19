@@ -1,11 +1,13 @@
 import os
 import logging
+import threading
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Loglama Ayarları
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -15,12 +17,18 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
 
+# --- FLASK WEB SUNUCUSU (Render için zorunlu) ---
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def health_check():
     return "Bot is running perfectly!", 200
 
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
+
+# --- TELEGRAM KOMUTLARI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 PinnOdds Analiz Botu Aktif!\n\n"
@@ -68,6 +76,7 @@ def extract_odds_safely(ev):
     home_name = str(ev.get("home", ev.get("home_team", ""))).lower()
     away_name = str(ev.get("away", ev.get("away_team", ""))).lower()
 
+    # Korner ve Kart (Booking) pazarlarını tamamen ele
     if "corner" in league_name or "booking" in league_name or "corner" in home_name or "booking" in home_name:
         return odds
 
@@ -119,12 +128,8 @@ def fetch_data():
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code != 200:
-            logger.error(f"API HTTP Hata Kodu: {res.status_code}")
             return None
-            
-        data = res.json()
-        events = data.get("events", [])
-        logger.info(f"API'den toplam {len(events)} maç çekildi.")
+        events = res.json().get("events", [])
         
         tr_timezone = timezone(timedelta(hours=3))
         now = datetime.now(tr_timezone)
@@ -140,7 +145,6 @@ def fetch_data():
                 except:
                     pass
             
-            # Geçmiş maçları ele
             if not match_dt or match_dt < now:
                 continue
             
@@ -154,10 +158,9 @@ def fetch_data():
             valid.append(ev)
             
         valid.sort(key=lambda x: x["parsed_dt"])
-        logger.info(f"Filtreleme sonrası geçerli maç sayısı: {len(valid)}")
         return valid
     except Exception as e:
-        logger.error(f"Veri Çekme İstisnası: {e}")
+        logger.error(f"Veri çekme hatası: {e}")
         return None
 
 def build_card(match):
@@ -198,23 +201,20 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API anahtarı eksik.")
         return
 
-    await update.message.reply_text("⏳ Sadece oranlı gelecek maçlar taranıyor...")
+    await update.message.reply_text("⏳ Gelecek 10 oranlı maç filtreleniyor...")
     events = fetch_data()
     if not events:
-        await update.message.reply_text(
-            "⚠️ Şu an bültende 1X2 oranları tam girilmiş yaklaşan maç bulunamadı.\n"
-            "(Gündüz saatlerinde maçlar eklenmeye başlandığında /maclar komutu listeyi getirecektir.)"
-        )
+        await update.message.reply_text("⚠️ Şu an bültende uygun oranlı maç bulunamadı.")
         return
 
-    msg = f"⚽ **GELECEK ORANLI MAÇLAR ({min(10, len(events))})** ⚽\n───────────────────\n\n"
+    msg = f"⚽ **GELECEK 10 ORANLI MAÇ VE ANALİZ** ⚽\n───────────────────\n\n"
     for m in events[:10]:
         msg += build_card(m) + "\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("⚠️ Takım adı yazın (Örn: /ara Puebla)")
+        await update.message.reply_text("⚠️ Takım adı yazın (Örn: /ara Real)")
         return
     query = " ".join(context.args).lower()
     events = fetch_data()
@@ -224,7 +224,7 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     matches = [m for m in events if query in str(m.get("home", "")).lower() or query in str(m.get("away", "")).lower()]
     if not matches:
-        await update.message.reply_text(f"🔍 '{query}' için oranlı ve gelecek saatlerde maç bulunamadı.")
+        await update.message.reply_text(f"🔍 '{query}' için oranlı maç bulunamadı.")
         return
 
     msg = f"🔎 **ARAMA: {query.upper()}**\n───────────────────\n\n"
@@ -232,24 +232,17 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += build_card(m) + "\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-def run_flask_app():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
-
 def main():
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
+        logger.error("TELEGRAM_BOT_TOKEN bulunamadı!")
         return
 
-    try:
-        requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=5)
-    except:
-        pass
-
-    import threading
-    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+    # Web sunucusunu arka planda başlat
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
+    logger.info("Flask sunucusu arka planda başlatıldı.")
 
+    # Telegram Bot uygulamasını kur
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -257,7 +250,7 @@ def main():
     app.add_handler(CommandHandler("maclar", maclar))
     app.add_handler(CommandHandler("ara", ara))
 
-    logger.info("Bot polling başlatılıyor...")
+    logger.info("Telegram Bot Polling başlatılıyor...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
