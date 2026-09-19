@@ -2,7 +2,7 @@ import os
 import logging
 import threading
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -27,9 +27,9 @@ def run_flask():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 PinnOdds Bot Aktif!\n\n"
+        "👋 PinnOdds Analiz Botu Aktif!\n\n"
         "Komutlar:\n"
-        "/maclar - Maçları, oranları ve yüzdelikleri listeler.\n"
+        "/maclar - Gelecek maçları, tüm oranları ve yüzdelikleri listeler.\n"
         "/ara [takım] - Takım arar."
     )
 
@@ -37,6 +37,7 @@ async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Bot aktif çalışıyor.")
 
 def calculate_prob(odd):
+    """Tekil orandan yüzde olasılık hesaplama"""
     try:
         val = float(odd)
         if val > 1.0:
@@ -44,6 +45,23 @@ def calculate_prob(odd):
     except (ValueError, TypeError):
         pass
     return "-"
+
+def calculate_ou_prob(over_odd, under_odd):
+    """Alt / Üst oranlarından karşılıklı yüzde olasılık hesaplama"""
+    try:
+        o_val = float(over_odd)
+        u_val = float(under_odd)
+        if o_val > 1.0 and u_val > 1.0:
+            p_over = (1 / o_val)
+            p_under = (1 / u_val)
+            total = p_over + p_under
+            # Piyasa marjını normalize et
+            norm_over = (p_over / total) * 100
+            norm_under = (p_under / total) * 100
+            return f"%{round(norm_over, 1)}", f"%{round(norm_under, 1)}"
+    except (ValueError, TypeError):
+        pass
+    return "-", "-"
 
 def extract_odds_safely(ev):
     odds = {
@@ -66,19 +84,16 @@ def extract_odds_safely(ev):
     if isinstance(periods, dict):
         p0 = periods.get("num_0", periods.get("0", {}))
         if isinstance(p0, dict):
-            # Moneyline (1X2) kontrolü
             ml = p0.get("money_line", p0.get("moneyline", p0.get("1x2", {})))
             if isinstance(ml, dict):
                 if odds["1"] == "-": odds["1"] = str(ml.get("home", ml.get("1", "-")))
                 if odds["X"] == "-": odds["X"] = str(ml.get("draw", ml.get("x", "-")))
                 if odds["2"] == "-": odds["2"] = str(ml.get("away", ml.get("2", "-")))
             
-            # Eğer money_line doğrudan p0 içinde home/draw/away olarak duruyorsa
             if odds["1"] == "-" and "home" in p0: odds["1"] = str(p0.get("home"))
             if odds["X"] == "-" and "draw" in p0: odds["X"] = str(p0.get("draw"))
             if odds["2"] == "-" and "away" in p0: odds["2"] = str(p0.get("away"))
 
-            # Totals (Alt/Üst) kontrolü
             totals = p0.get("totals", p0.get("over_under", {}))
             if isinstance(totals, dict):
                 for line, tdata in totals.items():
@@ -110,22 +125,31 @@ def fetch_data():
             return None
         events = res.json().get("events", [])
         
-        now = datetime.now(timezone.utc)
+        # Türkiye saati (UTC+3) ile güncel zaman kıyaslaması
+        tr_timezone = timezone(timedelta(hours=3))
+        now = datetime.now(tr_timezone)
+        
         valid = []
         for ev in events:
             starts_at = ev.get("starts_at", ev.get("starts", ""))
             match_dt = None
             if starts_at:
                 try:
-                    match_dt = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+                    # Gelen zamanı ISO formatından parse edip Türkiye saatine çevir
+                    clean_time = starts_at.replace("Z", "+00:00")
+                    match_dt = datetime.fromisoformat(clean_time).astimezone(tr_timezone)
                 except:
                     pass
-            if match_dt and match_dt < now:
+            
+            # Geçmişte kalmış veya başlamış maçları kesinlikle ele
+            if not match_dt or match_dt < now:
                 continue
+                
             ev["parsed_dt"] = match_dt
             valid.append(ev)
             
-        valid.sort(key=lambda x: x["parsed_dt"] if x["parsed_dt"] else datetime.max.replace(tzinfo=timezone.utc))
+        # Kronolojik sıra (En yakın maç en üstte)
+        valid.sort(key=lambda x: x["parsed_dt"])
         return valid
     except:
         return None
@@ -141,21 +165,27 @@ def build_card(match):
 
     odds = extract_odds_safely(match)
     
+    # 1X2 Olasılık Yüzdeleri
     p1 = calculate_prob(odds["1"])
     px = calculate_prob(odds["X"])
     p2 = calculate_prob(odds["2"])
 
+    # Alt/Üst Olasılık Yüzdeleri
+    o15_p, u15_p = calculate_ou_prob(odds["o15"], odds["u15"])
+    o25_p, u25_p = calculate_ou_prob(odds["o25"], odds["u25"])
+    o35_p, u35_p = calculate_ou_prob(odds["o35"], odds["u35"])
+
     card = f"⏰ **Saat:** {time_str}\n"
     card += f"🏆 **{league}**\n"
     card += f"⚔️ **{home} vs {away}**\n\n"
-    card += f"📊 **Kazanma Olasılık Yüzdeleri:**\n"
+    card += f"📊 **Maç Sonu (1X2) Olasılıkları:**\n"
     card += f"• Ev Sahibi: **{p1}** | Beraberlik: **{px}** | Deplasman: **{p2}**\n\n"
     card += f"1️⃣ **MS (1X2) Oranları:**\n"
     card += f"• MS 1: {odds['1']} | MS X: {odds['X']} | MS 2: {odds['2']}\n\n"
-    card += f"⚽ **Alt / Üst Oranları:**\n"
-    card += f"• 1.5 Alt: {odds['u15']} | 1.5 Üst: {odds['o15']}\n"
-    card += f"• 2.5 Alt: {odds['u25']} | 2.5 Üst: {odds['o25']}\n"
-    card += f"• 3.5 Alt: {odds['u35']} | 3.5 Üst: {odds['o35']}\n"
+    card += f"⚽ **Alt / Üst Oranları ve Yüzdeleri:**\n"
+    card += f"• 1.5 Alt: {odds['u15']} ({u15_p}) | 1.5 Üst: {odds['o15']} ({o15_p})\n"
+    card += f"• 2.5 Alt: {odds['u25']} ({u25_p}) | 2.5 Üst: {odds['o25']} ({o25_p})\n"
+    card += f"• 3.5 Alt: {odds['u35']} ({u35_p}) | 3.5 Üst: {odds['o35']} ({o35_p})\n"
     card += "───────────────────\n"
     return card
 
@@ -164,13 +194,13 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API anahtarı eksik.")
         return
 
-    await update.message.reply_text("⏳ Maçlar ve oranlar yükleniyor...")
+    await update.message.reply_text("⏳ Gelecek maçlar filtreleniyor ve oranlar hesaplanıyor...")
     events = fetch_data()
     if not events:
-        await update.message.reply_text("⚠️ Maç verisi alınamadı.")
+        await update.message.reply_text("⚠️ Şu an için yaklaşan (başlamamış) maç bulunamadı.")
         return
 
-    msg = "⚽ **YAKLAŞAN MAÇLAR** ⚽\n───────────────────\n\n"
+    msg = "⚽ **GELECEK MAÇLAR VE ORAN ANALİZİ** ⚽\n───────────────────\n\n"
     for m in events[:5]:
         msg += build_card(m) + "\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -182,12 +212,12 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     events = fetch_data()
     if not events:
-        await update.message.reply_text("⚠️ Maç bulunamadı.")
+        await update.message.reply_text("⚠️ Başlamamış maç bulunamadı.")
         return
     
     matches = [m for m in events if query in str(m.get("home", "")).lower() or query in str(m.get("away", "")).lower()]
     if not matches:
-        await update.message.reply_text(f"🔍 '{query}' için maç bulunamadı.")
+        await update.message.reply_text(f"🔍 '{query}' için gelecek saatlerde başlamak üzere maç bulunamadı.")
         return
 
     msg = f"🔎 **ARAMA: {query.upper()}**\n───────────────────\n\n"
