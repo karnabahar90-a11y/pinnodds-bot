@@ -211,16 +211,28 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        msg = f"⚽ **GELECEK 20 ORANLI MAÇ VE ANALİZ** ⚽\n───────────────────\n\n"
-        for m in events[:20]:
-            msg += build_card(m) + "\n"
+        target_events = events[:20]
+        chunks = [target_events[i:i + 10] for i in range(0, len(target_events), 10)]
+
+        # İlk mesajı güncelle
+        first_msg = f"⚽ **GELECEK ORANLI MAÇLAR (1-10)** ⚽\n───────────────────\n\n"
+        for m in chunks[0]:
+            first_msg += build_card(m) + "\n"
         
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_msg.message_id,
-            text=msg,
+            text=first_msg,
             parse_mode="Markdown"
         )
+
+        # Eğer 10'dan fazla varsa ikinci parçayı yeni mesaj olarak gönder
+        if len(chunks) > 1:
+            second_msg = f"⚽ **GELECEK ORANLI MAÇLAR (11-20)** ⚽\n───────────────────\n\n"
+            for m in chunks[1]:
+                second_msg += build_card(m) + "\n"
+            await update.message.reply_text(second_msg, parse_mode="Markdown")
+
     except Exception as e:
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
@@ -255,16 +267,26 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        msg = f"🔎 **ARAMA: {query.upper()}**\n───────────────────\n\n"
-        for m in matches[:20]:
-            msg += build_card(m) + "\n"
+        target_matches = matches[:20]
+        chunks = [target_matches[i:i + 10] for i in range(0, len(target_matches), 10)]
+
+        first_msg = f"🔎 **ARAMA: {query.upper()} (1-10)**\n───────────────────\n\n"
+        for m in chunks[0]:
+            first_msg += build_card(m) + "\n"
             
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_msg.message_id,
-            text=msg,
+            text=first_msg,
             parse_mode="Markdown"
         )
+
+        if len(chunks) > 1:
+            second_msg = f"🔎 **ARAMA: {query.upper()} (11-20)**\n───────────────────\n\n"
+            for m in chunks[1]:
+                second_msg += build_card(m) + "\n"
+            await update.message.reply_text(second_msg, parse_mode="Markdown")
+
     except Exception as e:
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
