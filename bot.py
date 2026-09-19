@@ -1,7 +1,7 @@
 import os
 import logging
 import threading
-import requests
+import httpx
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 from telegram import Update
@@ -121,15 +121,17 @@ def extract_odds_safely(ev):
 
     return odds
 
-def fetch_data():
+async def fetch_data():
     headers = {"x-portal-apikey": PINNODDS_API_KEY}
     url = "https://pinnodds.com/kit/v1/prematch/fixtures?sport_id=1"
     
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code != 200:
-            return None
-        events = res.json().get("events", [])
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code != 200:
+                return None
+            data = res.json()
+            events = data.get("events", [])
         
         tr_timezone = timezone(timedelta(hours=3))
         now = datetime.now(tr_timezone)
@@ -202,7 +204,7 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("⏳ Gelecek 10 oranlı maç filtreleniyor...")
-    events = fetch_data()
+    events = await fetch_data()
     if not events:
         await update.message.reply_text("⚠️ Şu an bültende uygun oranlı maç bulunamadı.")
         return
@@ -217,7 +219,7 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Takım adı yazın (Örn: /ara Real)")
         return
     query = " ".join(context.args).lower()
-    events = fetch_data()
+    events = await fetch_data()
     if not events:
         await update.message.reply_text("⚠️ Başlamamış maç bulunamadı.")
         return
