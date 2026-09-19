@@ -25,56 +25,98 @@ def run_flask():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 PinnOdds Botuna Hoş Geldiniz!\n\n"
+        "👋 PinnOdds Analiz Botuna Hoş Geldiniz!\n\n"
         "Komutlar:\n"
-        "/oranlar - Güncel düşen oranları ve maçları getirir.\n"
+        "/maclar - Başlamamış maçları, 1X2 & Alt/Üst oranlarını ve kazanma olasılıklarını getirir.\n"
         "/durum - Botun çalışma durumunu kontrol eder."
     )
 
 async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Bot Render üzerinde 7/24 aktif çalışıyor!")
 
-async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def calculate_probability(odd):
+    """Orandan zımnı olasılık (%) hesaplama"""
+    try:
+        val = float(odd)
+        if val > 1.0:
+            return round((1 / val) * 100, 1)
+    except (ValueError, TypeError):
+        pass
+    return "-"
+
+async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
-        await update.message.reply_text("❌ PinnOdds API anahtarı sistemde bulunamadı.")
+        await update.message.reply_text("❌ PinnOdds API anahtarı bulunamadı.")
         return
 
-    await update.message.reply_text("⏳ Pinnacle Düşen Oran Verileri Çekiliyor...")
+    await update.message.reply_text("⏳ Başlamamış maçlar, oranlar ve kazanma olasılıkları hesaplanıyor...")
     try:
         import requests
-        # FİLTRELER ESNETİLDİ: min_drop_pct=0.5 (Yarım puanlık düşüş) ve max_age_sec=86400 (Son 24 saat)
-        url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=0.5&max_age_sec=86400"
+        # Başlamamış maç fikstürleri ve oranları için endpoint
+        url = "https://pinnodds.com/api/fixtures?sport_id=1&status=prematch"
         headers = {"x-portal-apikey": PINNODDS_API_KEY}
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=12)
         
         if response.status_code == 200:
             data = response.json()
             
-            # Eğer veri doğrudan liste değil de dict içinde geliyorsa güvenli şekilde çıkar
             if isinstance(data, dict):
-                data = data.get("data", data.get("drops", []))
-            
-            if not data or len(data) == 0:
-                await update.message.reply_text("⚠️ Şu an için son 24 saatte %0.5'ten fazla düşen oran yok.")
+                fixtures = data.get("data", data.get("fixtures", []))
+            else:
+                fixtures = data
+
+            if not fixtures:
+                await update.message.reply_text("⚠️ Şu anda başlamamış aktif futbol karşılaşması bulunamadı.")
                 return
 
-            msg = "⚽ **DÜŞEN ORANLAR (Son 24 Saat)** ⚽\n\n"
-            for item in data[:10]:  # İlk 10 maçı göster
-                # API takım isimlerini "event" objesi içinde gönderiyorsa diye güvenlik eklendi
-                event_data = item.get("event", item)
+            msg = "⚽ **GÜNCEL MAÇ BÜLTENİ VE OLASILIKLAR** ⚽\n"
+            msg += "───────────────────\n\n"
+
+            for match in fixtures[:5]:  # Mesaj uzunluk sınırına takılmamak için ilk 5 kapsamlı maçı göster
+                home = match.get("home_team", match.get("home", "Ev Sahibi"))
+                away = match.get("away_team", match.get("away", "Deplasman"))
+                league = match.get("league_name", match.get("league", "Futbol Ligi"))
                 
-                home = event_data.get("home_team", event_data.get("home", "Ev Sahibi"))
-                away = event_data.get("away_team", event_data.get("away", "Deplasman"))
-                drop_pct = item.get("drop_pct", "0")
-                to_val = item.get("to", "-")
+                # Oranlar verisi
+                odds = match.get("odds", {})
                 
-                msg += f"🔹 **{home} vs {away}**\n"
-                msg += f"📉 Düşüş: %{drop_pct} | Yeni Oran: {to_val}\n\n"
+                # 1X2 Oranları
+                m1 = odds.get("home", odds.get("1", "-"))
+                mx = odds.get("draw", odds.get("X", "-"))
+                m2 = odds.get("away", odds.get("2", "-"))
+                
+                # Kazanma Olasılıkları Hesaplama (%)
+                prob_1 = calculate_probability(m1)
+                prob_x = calculate_probability(mx)
+                prob_2 = calculate_probability(m2)
+                
+                # Alt/Üst Oranları
+                u1_5 = odds.get("under_1_5", "-")
+                o1_5 = odds.get("over_1_5", "-")
+                u2_5 = odds.get("under_2_5", "-")
+                o2_5 = odds.get("over_2_5", "-")
+                u3_5 = odds.get("under_3_5", "-")
+                o3_5 = odds.get("over_3_5", "-")
+
+                msg += f"🏆 **{league}**\n"
+                msg += f"⚔️ **{home} vs {away}**\n\n"
+                
+                msg += f"📊 **Kazanma Olasılıkları:**\n"
+                msg += f"• Ev Sahibi: %{prob_1} | Beraberlik: %{prob_x} | Deplasman: %{prob_2}\n\n"
+                
+                msg += f"1️⃣ **MS (1X2) Oranları:**\n"
+                msg += f"• MS 1: {m1} | MS X: {mx} | MS 2: {m2}\n\n"
+                
+                msg += f"⚽ **Alt / Üst Oranları:**\n"
+                msg += f"• 1.5 Alt: {u1_5} | 1.5 Üst: {o1_5}\n"
+                msg += f"• 2.5 Alt: {u2_5} | 2.5 Üst: {o2_5}\n"
+                msg += f"• 3.5 Alt: {u3_5} | 3.5 Üst: {o3_5}\n"
+                msg += "───────────────────\n\n"
 
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"⚠️ API Hatası ({response.status_code}).")
+            await update.message.reply_text(f"⚠️ API Hatası ({response.status_code}): Veriler çekilemedi.")
     except Exception as e:
         await update.message.reply_text(f"❌ Bağlantı hatası: {str(e)}")
 
@@ -89,7 +131,8 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("durum", durum))
-    app.add_handler(CommandHandler("oranlar", oranlar))
+    app.add_handler(CommandHandler("oranlar", maclar))
+    app.add_handler(CommandHandler("maclar", maclar))
 
     print("Telegram botu başlatılıyor...")
     app.run_polling(drop_pending_updates=True, stop_signals=None)
