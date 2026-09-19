@@ -29,8 +29,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 PinnOdds Bot Aktif!\n\n"
         "Komutlar:\n"
-        "/maclar - Maçları ve oranları listeler.\n"
-        "/ara [takım] - Belirli bir takımı arar."
+        "/maclar - Maçları, oranları ve yüzdelikleri listeler.\n"
+        "/ara [takım] - Takım arar."
     )
 
 async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -46,14 +46,13 @@ def calculate_prob(odd):
     return "-"
 
 def extract_odds_safely(ev):
-    """PinnOdds objesindeki olası tüm 1X2 ve Alt/Üst anahtarlarını güvenle tarar"""
     odds = {
         "1": "-", "X": "-", "2": "-",
         "o15": "-", "u15": "-",
         "o25": "-", "u25": "-",
         "o35": "-", "u35": "-"
     }
-    
+
     # 1. Doğrudan event seviyesindeki alanlar
     for k in ["home_price", "home_odds", "price_home", "home_win", "1"]:
         if k in ev and ev[k] not in [None, ""]: odds["1"] = str(ev[k])
@@ -62,39 +61,42 @@ def extract_odds_safely(ev):
     for k in ["away_price", "away_odds", "price_away", "away_win", "2"]:
         if k in ev and ev[k] not in [None, ""]: odds["2"] = str(ev[k])
 
-    # 2. 'markets' veya 'periods' içindeki olası yapılar
-    for container_key in ["markets", "periods", "prices", "odds"]:
-        container = ev.get(container_key)
-        if isinstance(container, dict):
-            for sub_k, sub_v in container.items():
-                if isinstance(sub_v, dict):
-                    # Moneyline arama
-                    for mk_key in ["moneyline", "1x2", "win_draw_win"]:
-                        if mk_key in sub_v and isinstance(sub_v[mk_key], dict):
-                            ml = sub_v[mk_key]
-                            if odds["1"] == "-": odds["1"] = str(ml.get("home", ml.get("1", "-")))
-                            if odds["X"] == "-": odds["X"] = str(ml.get("draw", ml.get("x", "-")))
-                            if odds["2"] == "-": odds["2"] = str(ml.get("away", ml.get("2", "-")))
-                    
-                    # Totals arama
-                    for tot_key in ["totals", "over_under"]:
-                        if tot_key in sub_v and isinstance(sub_v[tot_key], dict):
-                            for line, tdata in sub_v[tot_key].items():
-                                if isinstance(tdata, dict):
-                                    o = tdata.get("over", tdata.get("o", "-"))
-                                    u = tdata.get("under", tdata.get("u", "-"))
-                                    if str(line) in ["1.5", "15"]: odds["o15"], odds["u15"] = str(o), str(u)
-                                    if str(line) in ["2.5", "25"]: odds["o25"], odds["u25"] = str(o), str(u)
-                                    if str(line) in ["3.5", "35"]: odds["o35"], odds["u35"] = str(o), str(u)
+    # 2. periods -> num_0 veya 0 (Pinnacle standart yapısı)
+    periods = ev.get("periods", {})
+    if isinstance(periods, dict):
+        p0 = periods.get("num_0", periods.get("0", {}))
+        if isinstance(p0, dict):
+            # Moneyline (1X2) kontrolü
+            ml = p0.get("money_line", p0.get("moneyline", p0.get("1x2", {})))
+            if isinstance(ml, dict):
+                if odds["1"] == "-": odds["1"] = str(ml.get("home", ml.get("1", "-")))
+                if odds["X"] == "-": odds["X"] = str(ml.get("draw", ml.get("x", "-")))
+                if odds["2"] == "-": odds["2"] = str(ml.get("away", ml.get("2", "-")))
+            
+            # Eğer money_line doğrudan p0 içinde home/draw/away olarak duruyorsa
+            if odds["1"] == "-" and "home" in p0: odds["1"] = str(p0.get("home"))
+            if odds["X"] == "-" and "draw" in p0: odds["X"] = str(p0.get("draw"))
+            if odds["2"] == "-" and "away" in p0: odds["2"] = str(p0.get("away"))
 
-        elif isinstance(container, list):
-            for item in container:
-                if isinstance(item, dict):
-                    name = str(item.get("name", item.get("type", ""))).lower()
-                    if "moneyline" in name or "1x2" in name:
-                        if odds["1"] == "-": odds["1"] = str(item.get("home", item.get("price_1", "-")))
-                        if odds["X"] == "-": odds["X"] = str(item.get("draw", item.get("price_x", "-")))
-                        if odds["2"] == "-": odds["2"] = str(item.get("away", item.get("price_2", "-")))
+            # Totals (Alt/Üst) kontrolü
+            totals = p0.get("totals", p0.get("over_under", {}))
+            if isinstance(totals, dict):
+                for line, tdata in totals.items():
+                    if isinstance(tdata, dict):
+                        o = tdata.get("over", tdata.get("o", "-"))
+                        u = tdata.get("under", tdata.get("u", "-"))
+                        if str(line) in ["1.5", "15"]: odds["o15"], odds["u15"] = str(o), str(u)
+                        if str(line) in ["2.5", "25"]: odds["o25"], odds["u25"] = str(o), str(u)
+                        if str(line) in ["3.5", "35"]: odds["o35"], odds["u35"] = str(o), str(u)
+
+    # 3. markets anahtarı altındaki olası yapılar
+    markets = ev.get("markets", {})
+    if isinstance(markets, dict):
+        ml = markets.get("moneyline", markets.get("money_line", markets.get("1x2", {})))
+        if isinstance(ml, dict):
+            if odds["1"] == "-": odds["1"] = str(ml.get("home", ml.get("1", "-")))
+            if odds["X"] == "-": odds["X"] = str(ml.get("draw", ml.get("x", "-")))
+            if odds["2"] == "-": odds["2"] = str(ml.get("away", ml.get("2", "-")))
 
     return odds
 
@@ -162,7 +164,7 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API anahtarı eksik.")
         return
 
-    await update.message.reply_text("⏳ Maçlar yükleniyor...")
+    await update.message.reply_text("⏳ Maçlar ve oranlar yükleniyor...")
     events = fetch_data()
     if not events:
         await update.message.reply_text("⚠️ Maç verisi alınamadı.")
