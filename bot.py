@@ -6,7 +6,6 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Logging ayarları
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -15,7 +14,6 @@ logging.basicConfig(
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
 
-# Render port doğrulaması için Flask uygulaması
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -30,39 +28,55 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 PinnOdds Botuna Hoş Geldiniz!\n\n"
         "Komutlar:\n"
-        "/oranlar - Güncel PinnOdds oranlarını getirir.\n"
+        "/oranlar - Güncel düşen oranları ve maçları getirir.\n"
         "/durum - Botun çalışma durumunu kontrol eder."
     )
 
 async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot Render üzerinde 7/24 ücretsiz olarak çalışıyor!")
+    await update.message.reply_text("✅ Bot Render üzerinde 7/24 aktif çalışıyor!")
 
 async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
-        await update.message.reply_text("❌ PinnOdds API anahtarı bulunamadı.")
+        await update.message.reply_text("❌ PinnOdds API anahtarı sistemde bulunamadı.")
         return
 
-    await update.message.reply_text("⏳ PinnOdds verileri çekiliyor...")
+    await update.message.reply_text("⏳ Pinnacle Düşen Oran Verileri Çekiliyor...")
     try:
         import requests
-        url = "https://api.pinnodds.com/v1/odds"
-        headers = {"x-api-key": PINNODDS_API_KEY}
+        # PinnacleOddsAPI doğru endpoint ve header kullanımı
+        url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=2&max_age_sec=10800"
+        headers = {"x-portal-apikey": PINNODDS_API_KEY}
+        
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            await update.message.reply_text(f"📊 Veriler başarıyla çekildi!\n\nPayload: {str(data)[:300]}...")
+            
+            if not data or not isinstance(data, list):
+                await update.message.reply_text("⚠️ Şu anda aktif düşen oran verisi bulunamadı.")
+                return
+
+            msg = "⚽ **DÜŞEN ORANLAR (Prematch Drops)** ⚽\n\n"
+            for item in data[:8]:  # İlk 8 maçı göster
+                home = item.get("home_team", item.get("home", "Ev Sahibi"))
+                away = item.get("away_team", item.get("away", "Deplasman"))
+                drop_pct = item.get("drop_pct", "0")
+                to_val = item.get("to", "-")
+                
+                msg += f"🔹 **{home} vs {away}**\n"
+                msg += f"📉 Düşüş: %{drop_pct} | Yeni Oran: {to_val}\n\n"
+
+            await update.message.reply_text(msg, parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"⚠️ PinnOdds API hatası: {response.status_code}")
+            await update.message.reply_text(f"⚠️ API Hatası ({response.status_code}): Lütfen API anahtarını kontrol edin.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Bir hata oluştu: {str(e)}")
+        await update.message.reply_text(f"❌ Bağlantı hatası: {str(e)}")
 
 def run_telegram_bot():
     if not TELEGRAM_BOT_TOKEN:
         print("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
 
-    # Yeni bir asyncio event loop oluşturup botu bu kanalda çalıştırıyoruz
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -71,14 +85,11 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("durum", durum))
     app.add_handler(CommandHandler("oranlar", oranlar))
 
-    print("Telegram botu başlatıldı!")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
-    # Telegram botunu ayrı bir thread içinde başlatıyoruz
     bot_thread = threading.Thread(target=run_telegram_bot)
     bot_thread.daemon = True
     bot_thread.start()
 
-    # Flask web sunucusunu ana thread üzerinde çalıştırıyoruz
     run_flask()
