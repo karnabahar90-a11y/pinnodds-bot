@@ -119,8 +119,12 @@ def fetch_data():
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code != 200:
+            logger.error(f"API HTTP Hata Kodu: {res.status_code}")
             return None
-        events = res.json().get("events", [])
+            
+        data = res.json()
+        events = data.get("events", [])
+        logger.info(f"API'den toplam {len(events)} maç çekildi.")
         
         tr_timezone = timezone(timedelta(hours=3))
         now = datetime.now(tr_timezone)
@@ -136,10 +140,12 @@ def fetch_data():
                 except:
                     pass
             
+            # Geçmiş maçları ele
             if not match_dt or match_dt < now:
                 continue
             
             odds = extract_odds_safely(ev)
+            # Oransız maçları ele
             if odds["1"] == "-" or odds["X"] == "-" or odds["2"] == "-":
                 continue
                 
@@ -148,9 +154,10 @@ def fetch_data():
             valid.append(ev)
             
         valid.sort(key=lambda x: x["parsed_dt"])
+        logger.info(f"Filtreleme sonrası geçerli maç sayısı: {len(valid)}")
         return valid
     except Exception as e:
-        logger.error(f"API Veri Çekme Hatası: {e}")
+        logger.error(f"Veri Çekme İstisnası: {e}")
         return None
 
 def build_card(match):
@@ -191,13 +198,16 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API anahtarı eksik.")
         return
 
-    await update.message.reply_text("⏳ Sadece oranlı gelecek 10 maç filtreleniyor...")
+    await update.message.reply_text("⏳ Sadece oranlı gelecek maçlar taranıyor...")
     events = fetch_data()
     if not events:
-        await update.message.reply_text("⚠️ Uygun oranlı yaklaşan maç bulunamadı.")
+        await update.message.reply_text(
+            "⚠️ Şu an bültende 1X2 oranları tam girilmiş yaklaşan maç bulunamadı.\n"
+            "(Gündüz saatlerinde maçlar eklenmeye başlandığında /maclar komutu listeyi getirecektir.)"
+        )
         return
 
-    msg = "⚽ **GELECEK 10 ORANLI MAÇ VE ANALİZ** ⚽\n───────────────────\n\n"
+    msg = f"⚽ **GELECEK ORANLI MAÇLAR ({min(10, len(events))})** ⚽\n───────────────────\n\n"
     for m in events[:10]:
         msg += build_card(m) + "\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -231,7 +241,6 @@ def main():
         logger.error("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
 
-    # Eski webhook kalıntılarını temizle (Bad Gateway ve çakışma hatalarını önler)
     try:
         requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=5)
     except:
