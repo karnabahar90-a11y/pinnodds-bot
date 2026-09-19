@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import requests
 from datetime import datetime, timezone
 from flask import Flask
 from telegram import Update
@@ -26,17 +27,18 @@ def run_flask():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 PinnOdds Analiz Botuna Hoş Geldiniz!\n\n"
+        "👋 PinnOdds Analiz Botu Aktif!\n\n"
         "Komutlar:\n"
-        "/maclar - Yaklaşan maçları, 1X2 ve Alt/Üst oranları ile olasılık yüzdelerini getirir.\n"
-        "/ara takım_adı - İstediğiniz takımı arar (Örn: /ara Puebla).\n"
-        "/durum - Botun çalışma durumunu gösterir."
+        "/maclar - Yaklaşan maçları, 1X2, Alt/Üst ve yüzde olasılıklarını getirir.\n"
+        "/ara takım_adı - Maç arar (Örn: /ara Puebla).\n"
+        "/durum - Bot durumunu gösterir."
     )
 
 async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot Render üzerinde 7/24 aktif çalışıyor!")
+    await update.message.reply_text("✅ Bot 7/24 aktif çalışıyor!")
 
 def calculate_prob(odd):
+    """Orandan yüzde olasılık hesabı"""
     try:
         val = float(odd)
         if val > 1.0:
@@ -45,12 +47,8 @@ def calculate_prob(odd):
         pass
     return "-"
 
-def get_event_details(event_id):
-    """Prematch Event endpoint'inden 1X2 ve Alt/Üst oranlarını eksiksiz çeker"""
-    import requests
-    url = f"https://pinnodds.com/kit/v1/prematch/event?event_id={event_id}"
-    headers = {"x-portal-apikey": PINNODDS_API_KEY}
-    
+def parse_markets_direct(markets_data):
+    """PinnOdds API'sinin 'markets' objesini doğrudan ayrıştırır"""
     odds = {
         "1": "-", "X": "-", "2": "-",
         "o15": "-", "u15": "-",
@@ -58,44 +56,35 @@ def get_event_details(event_id):
         "o35": "-", "u35": "-"
     }
     
-    try:
-        res = requests.get(url, headers=headers, timeout=6)
-        if res.status_code == 200:
-            data = res.json()
-            periods = data.get("periods", {})
-            p0 = periods.get("num_0", periods.get("0", {}))
-            if not p0 and isinstance(periods, dict) and len(periods) > 0:
-                p0 = list(periods.values())[0]
+    if not isinstance(markets_data, dict):
+        return odds
 
-            if isinstance(p0, dict):
-                # 1X2 Oranları
-                ml = p0.get("moneyline", {})
-                if isinstance(ml, dict):
-                    odds["1"] = ml.get("home", ml.get("1", "-"))
-                    odds["X"] = ml.get("draw", ml.get("x", "-"))
-                    odds["2"] = ml.get("away", ml.get("2", "-"))
+    # 1. Moneyline / 1X2 (MS) Oranları
+    moneyline = markets_data.get("moneyline", markets_data.get("1x2", {}))
+    if isinstance(moneyline, dict):
+        odds["1"] = moneyline.get("home", moneyline.get("1", "-"))
+        odds["X"] = moneyline.get("draw", moneyline.get("x", "-"))
+        odds["2"] = moneyline.get("away", moneyline.get("2", "-"))
 
-                # Alt / Üst Oranları
-                totals = p0.get("totals", {})
-                if isinstance(totals, dict):
-                    for line, tdata in totals.items():
-                        line_str = str(line)
-                        if isinstance(tdata, dict):
-                            o_val = tdata.get("over", "-")
-                            u_val = tdata.get("under", "-")
-                            if line_str in ["1.5", "15"]:
-                                odds["o15"], odds["u15"] = o_val, u_val
-                            elif line_str in ["2.5", "25"]:
-                                odds["o25"], odds["u25"] = o_val, u_val
-                            elif line_str in ["3.5", "35"]:
-                                odds["o35"], odds["u35"] = o_val, u_val
-    except Exception:
-        pass
+    # 2. Totals / Alt-Üst Oranları
+    totals = markets_data.get("totals", {})
+    if isinstance(totals, dict):
+        for line, data in totals.items():
+            line_str = str(line)
+            if isinstance(data, dict):
+                over_val = data.get("over", "-")
+                under_val = data.get("under", "-")
+                
+                if line_str in ["1.5", "15"]:
+                    odds["o15"], odds["u15"] = over_val, under_val
+                elif line_str in ["2.5", "25"]:
+                    odds["o25"], odds["u25"] = over_val, under_val
+                elif line_str in ["3.5", "35"]:
+                    odds["o35"], odds["u35"] = over_val, under_val
 
     return odds
 
-def fetch_matches():
-    import requests
+def fetch_and_process_matches():
     headers = {"x-portal-apikey": PINNODDS_API_KEY}
     url = "https://pinnodds.com/kit/v1/prematch/fixtures?sport_id=1"
     
@@ -117,28 +106,52 @@ def fetch_matches():
             except Exception:
                 pass
         
+        # Başlamış maçları filtrele
         if match_dt and match_dt < now:
             continue
         
         ev["parsed_dt"] = match_dt
         valid_events.append(ev)
 
+    # Saat sırasına diz (En yakın maç üstte)
     valid_events.sort(key=lambda x: x["parsed_dt"] if x["parsed_dt"] else datetime.max.replace(tzinfo=timezone.utc))
     return valid_events, 200
+
+def get_single_event_odds(event_id, ev_fallback):
+    """Tekil maç detayından veya ana obje üzerindeki markets'ten oranları çeker"""
+    headers = {"x-portal-apikey": PINNODDS_API_KEY}
+    url = f"https://pinnodds.com/kit/v1/prematch/event?event_id={event_id}"
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            # API yanıtındaki 'markets' veya 'periods' verisi
+            mk = data.get("markets", {})
+            if not mk and "periods" in data:
+                p0 = data["periods"].get("num_0", data["periods"].get("0", {}))
+                mk = p0
+            return parse_markets_direct(mk)
+    except Exception:
+        pass
+
+    # Yedek: Fikstür objesinin kendi içindeki markets
+    return parse_markets_direct(ev_fallback.get("markets", {}))
 
 def format_card(match):
     home = match.get("home", "Ev Sahibi")
     away = match.get("away", "Deplasman")
-    league = match.get("league_name", "Futbol Ligi")
+    league = match.get("league_name", match.get("league", "Futbol Ligi"))
     event_id = match.get("id")
     
     time_str = "Saat Bilinmiyor"
     if match.get("parsed_dt"):
         time_str = match["parsed_dt"].strftime("%H:%M (%d.%m.%Y)")
 
-    # Detay endpoint'inden oranları al
-    odds = get_event_details(event_id)
+    # Oranları Çek
+    odds = get_single_event_odds(event_id, match)
     
+    # Yüzde Olasılık Hesabı
     p1 = calculate_prob(odds["1"])
     px = calculate_prob(odds["X"])
     p2 = calculate_prob(odds["2"])
@@ -159,17 +172,17 @@ def format_card(match):
 
 async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
-        await update.message.reply_text("❌ API anahtarı yok.")
+        await update.message.reply_text("❌ API anahtarı tanımlı değil.")
         return
 
-    await update.message.reply_text("⏳ En yakın maçlar ve 1X2/Alt-Üst oranları çekiliyor...")
+    await update.message.reply_text("⏳ Yaklaşan maçlar ve oranlar çekiliyor...")
     try:
-        events, status = fetch_matches()
+        events, status = fetch_and_process_matches()
         if status != 200 or not events:
-            await update.message.reply_text("⚠️ Başlamamış maç bulunamadı.")
+            await update.message.reply_text("⚠️ Maç bulunamadı.")
             return
 
-        msg = "⚽ **YAKLAŞAN MAÇLAR VE ORANLAR** ⚽\n"
+        msg = "⚽ **YAKLAŞAN MAÇLAR VE ANALİZ** ⚽\n"
         msg += "───────────────────\n\n"
 
         for match in events[:5]:
@@ -181,20 +194,20 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not PINNODDS_API_KEY:
-        await update.message.reply_text("❌ API anahtarı yok.")
+        await update.message.reply_text("❌ API anahtarı tanımlı değil.")
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ Takım adı yazın. Örnek: `/ara Puebla`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Takım adı girin.\nÖrnek: `/ara Puebla`", parse_mode="Markdown")
         return
 
     query = " ".join(context.args).lower()
     await update.message.reply_text(f"🔍 '{query}' aranıyor...")
 
     try:
-        events, status = fetch_matches()
+        events, status = fetch_and_process_matches()
         if status != 200 or not events:
-            await update.message.reply_text("⚠️ Maç bulunamadı.")
+            await update.message.reply_text("⚠️ Maç verisi alınamadı.")
             return
 
         matches = [ev for ev in events if query in str(ev.get("home", "")).lower() or query in str(ev.get("away", "")).lower()]
@@ -215,7 +228,7 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not TELEGRAM_BOT_TOKEN:
-        print("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
+        print("HATA: TELEGRAM_BOT_TOKEN yok!")
         return
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
