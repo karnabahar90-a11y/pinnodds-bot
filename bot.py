@@ -38,7 +38,7 @@ def calculate_prob(odd):
     try:
         val = float(odd)
         if val > 1.0:
-            return f"{round((1 / val) * 100, 1)}%"
+            return f"%{round((1 / val) * 100, 1)}"
     except (ValueError, TypeError):
         pass
     return "-"
@@ -48,19 +48,27 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ PinnOdds API anahtarı bulunamadı.")
         return
 
-    await update.message.reply_text("⏳ Başlamamış maçlar ve olasılıklar hesaplanıyor...")
+    await update.message.reply_text("⏳ Başlamamış maçlar ve oranlar çekiliyor...")
     try:
         import requests
-        url = "https://pinnodds.com/api/odds?sport_id=1"
+        
+        # PinnOdds API Prematch Fikstür & Oran Servisi
         headers = {"x-portal-apikey": PINNODDS_API_KEY}
         
+        # 1. Öncelikli endpoint: Pre-match drops / fixtures
+        url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=0&max_age_sec=86400"
         response = requests.get(url, headers=headers, timeout=12)
         
+        if response.status_code != 200:
+            # Alternatif endpoint denemesi
+            url = "https://pinnodds.com/api/fixtures?sport_id=1"
+            response = requests.get(url, headers=headers, timeout=12)
+
         if response.status_code == 200:
             data = response.json()
             
             if isinstance(data, dict):
-                fixtures = data.get("data", data.get("events", data.get("fixtures", [])))
+                fixtures = data.get("data", data.get("events", data.get("fixtures", data.get("drops", []))))
             else:
                 fixtures = data
 
@@ -68,33 +76,40 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("⚠️ Şu anda görüntülenecek aktif maç verisi bulunamadı.")
                 return
 
-            msg = "⚽ **GÜNCEL MAÇ BÜLTENİ VE OLASILIKLAR** ⚽\n"
+            msg = "⚽ **GÜNCEL MAÇ BÜLTENİ VE ANALİZİ** ⚽\n"
             msg += "───────────────────\n\n"
 
-            for match in fixtures[:5]:
+            count = 0
+            for match in fixtures:
+                if count >= 5:  # Telegram mesaj sınırını aşmamak için 5 maç
+                    break
+
                 home = match.get("home_team", match.get("home", "Ev Sahibi"))
                 away = match.get("away_team", match.get("away", "Deplasman"))
                 league = match.get("league_name", match.get("league", "Futbol Ligi"))
                 
+                # Oran objesi
                 odds = match.get("odds", match)
                 
                 # 1X2 Oranları
-                m1 = odds.get("home_win", odds.get("home", odds.get("1", "-")))
-                mx = odds.get("draw", odds.get("X", "-"))
-                m2 = odds.get("away_win", odds.get("away", odds.get("2", "-")))
+                m1 = odds.get("home", odds.get("1", odds.get("price_home", "-")))
+                mx = odds.get("draw", odds.get("X", odds.get("price_draw", "-")))
+                m2 = odds.get("away", odds.get("2", odds.get("price_away", "-")))
                 
-                # Olasılıklar
+                # Olasılıklar (%)
                 p1 = calculate_prob(m1)
                 px = calculate_prob(mx)
                 p2 = calculate_prob(m2)
                 
-                # Alt / Üst Oranları
-                u1_5 = odds.get("under_1_5", "-")
-                o1_5 = odds.get("over_1_5", "-")
-                u2_5 = odds.get("under_2_5", "-")
-                o2_5 = odds.get("over_2_5", "-")
-                u3_5 = odds.get("under_3_5", "-")
-                o3_5 = odds.get("over_3_5", "-")
+                # Alt / Üst Seçenekleri (1.5, 2.5, 3.5)
+                u1_5 = odds.get("under_1_5", odds.get("u15", "-"))
+                o1_5 = odds.get("over_1_5", odds.get("o15", "-"))
+                
+                u2_5 = odds.get("under_2_5", odds.get("u25", "-"))
+                o2_5 = odds.get("over_2_5", odds.get("o25", "-"))
+                
+                u3_5 = odds.get("under_3_5", odds.get("u35", "-"))
+                o3_5 = odds.get("over_3_5", odds.get("o35", "-"))
 
                 msg += f"🏆 **{league}**\n"
                 msg += f"⚔️ **{home} vs {away}**\n\n"
@@ -110,10 +125,12 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"• 2.5 Alt: {u2_5} | 2.5 Üst: {o2_5}\n"
                 msg += f"• 3.5 Alt: {u3_5} | 3.5 Üst: {o3_5}\n"
                 msg += "───────────────────\n\n"
+                
+                count += 1
 
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"⚠️ API Hatası ({response.status_code}): Servis yanıt vermedi.")
+            await update.message.reply_text(f"⚠️ API Hatası ({response.status_code}): Lütfen API endpoint izinlerinizi kontrol edin.")
     except Exception as e:
         await update.message.reply_text(f"❌ Bağlantı hatası: {str(e)}")
 
