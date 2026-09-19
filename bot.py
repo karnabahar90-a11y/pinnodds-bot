@@ -1,6 +1,5 @@
 import os
 import logging
-import threading
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask
@@ -11,6 +10,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
@@ -19,11 +19,7 @@ app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def health_check():
-    return "Bot is running!", 200
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
+    return "Bot is running perfectly!", 200
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -34,7 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def durum(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot aktif çalışıyor.")
+    await update.message.reply_text("✅ Bot aktif ve çalışıyor!")
 
 def calculate_prob(odd):
     try:
@@ -72,7 +68,6 @@ def extract_odds_safely(ev):
     home_name = str(ev.get("home", ev.get("home_team", ""))).lower()
     away_name = str(ev.get("away", ev.get("away_team", ""))).lower()
 
-    # Korner, Kart (Bookings) veya özel yan bahis bültenlerini tamamen ele
     if "corner" in league_name or "booking" in league_name or "corner" in home_name or "booking" in home_name:
         return odds
 
@@ -141,11 +136,9 @@ def fetch_data():
                 except:
                     pass
             
-            # Geçmiş maçları ele
             if not match_dt or match_dt < now:
                 continue
             
-            # Oranları kontrol et: 1X2 oranlarından en az biri eksikse bu maçı listeden tamamen atlayalım (Oransızları gösterme)
             odds = extract_odds_safely(ev)
             if odds["1"] == "-" or odds["X"] == "-" or odds["2"] == "-":
                 continue
@@ -156,7 +149,8 @@ def fetch_data():
             
         valid.sort(key=lambda x: x["parsed_dt"])
         return valid
-    except:
+    except Exception as e:
+        logger.error(f"API Veri Çekme Hatası: {e}")
         return None
 
 def build_card(match):
@@ -228,16 +222,33 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += build_card(m) + "\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+def run_flask_app():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
+
 def main():
     if not TELEGRAM_BOT_TOKEN:
+        logger.error("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
-    t = threading.Thread(target=run_flask, daemon=True)
-    t.start()
+
+    # Eski webhook kalıntılarını temizle (Bad Gateway ve çakışma hatalarını önler)
+    try:
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=5)
+    except:
+        pass
+
+    import threading
+    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+    flask_thread.start()
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("durum", durum))
     app.add_handler(CommandHandler("maclar", maclar))
     app.add_handler(CommandHandler("ara", ara))
+
+    logger.info("Bot polling başlatılıyor...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
