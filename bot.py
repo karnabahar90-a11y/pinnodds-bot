@@ -1,7 +1,7 @@
 import os
 import logging
 import threading
-import httpx
+import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 from telegram import Update
@@ -120,17 +120,19 @@ def extract_odds_safely(ev):
 
     return odds
 
-async def fetch_data():
+def fetch_data():
     headers = {"x-portal-apikey": PINNODDS_API_KEY}
     url = "https://pinnodds.com/kit/v1/prematch/fixtures?sport_id=1"
     
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        res = await client.get(url, headers=headers)
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
         if res.status_code != 200:
-            logger.error(f"API Hata Kodu: {res.status_code}")
             return []
         data = res.json()
         events = data.get("events", [])
+    except Exception as e:
+        logger.error(f"API İstek Hatası: {e}")
+        return []
     
     tr_timezone = timezone(timedelta(hours=3))
     now = datetime.now(tr_timezone)
@@ -200,7 +202,7 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sent_msg = await update.message.reply_text("⏳ Gelecek 10 oranlı maç filtreleniyor...")
     try:
-        events = await fetch_data()
+        events = fetch_data()
         if not events:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
@@ -220,11 +222,10 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     except Exception as e:
-        logger.error(f"Maclar komutu hata: {e}")
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_msg.message_id,
-            text=f"❌ Veri çekilirken bir hata oluştu: {str(e)}"
+            text=f"❌ Hata oluştu: {str(e)}"
         )
 
 async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -233,10 +234,10 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     query = " ".join(context.args).lower()
-    sent_msg = await update.message.reply_text(f"🔍 '{query.upper()'}' aranıyor...")
+    sent_msg = await update.message.reply_text(f"🔍 '{query.upper()}' aranıyor...")
     
     try:
-        events = await fetch_data()
+        events = fetch_data()
         if not events:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
@@ -265,11 +266,10 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     except Exception as e:
-        logger.error(f"Ara komutu hata: {e}")
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_msg.message_id,
-            text=f"❌ Arama sırasında hata oluştu: {str(e)}"
+            text=f"❌ Arama hatası: {str(e)}"
         )
 
 def main():
@@ -279,7 +279,6 @@ def main():
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logger.info("Flask sunucusu arka planda başlatıldı.")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
@@ -288,7 +287,7 @@ def main():
     app.add_handler(CommandHandler("maclar", maclar))
     app.add_handler(CommandHandler("ara", ara))
 
-    logger.info("Telegram Bot Polling başlatılıyor...")
+    logger.info("Bot Polling başlatılıyor...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
