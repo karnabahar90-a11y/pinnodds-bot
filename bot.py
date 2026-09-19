@@ -33,7 +33,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 PinnOdds Analiz Botu Aktif!\n\n"
         "Komutlar:\n"
-        "/maclar - Gelecek oranlı 20 maçı ve yüzdelikleri listeler.\n"
+        "/maclar - Gelecek oranlı 10 maçı ve detaylı yüzdelikleri listeler.\n"
         "/ara [takım] - Takım arar."
     )
 
@@ -152,7 +152,7 @@ def fetch_data():
             continue
         
         odds = extract_odds_safely(ev)
-        if odds["1"] == "-" or odds["X"] == "-" or odds["2"] == "-" :
+        if odds["1"] == "-" or odds["X"] == "-" or odds["2"] == "-":
             continue
             
         ev["parsed_dt"] = match_dt
@@ -181,10 +181,17 @@ def build_card(match):
     o25_p, u25_p = calculate_ou_prob(odds["o25"], odds["u25"])
     o35_p, u35_p = calculate_ou_prob(odds["o35"], odds["u35"])
 
-    card = f"⏰ {time_str} | 🏆 {league}\n"
-    card += f"⚔️ **{home} vs {away}**\n"
-    card += f"📊 1X2: {p1} | {px} | {p2} (Oran: {odds['1']} | {odds['X']} | {odds['2']})\n"
-    card += f"⚽ Üst/Alt: 1.5({o15_p}) | 2.5({o25_p}) | 3.5({o35_p})\n"
+    card = f"⏰ **Saat:** {time_str}\n"
+    card += f"🏆 **{league}**\n"
+    card += f"⚔️ **{home} vs {away}**\n\n"
+    card += f"📊 **Maç Sonu (1X2) Olasılıkları:**\n"
+    card += f"• Ev Sahibi: **{p1}** | Beraberlik: **{px}** | Deplasman: **{p2}**\n\n"
+    card += f"1️⃣ **MS (1X2) Oranları:**\n"
+    card += f"• MS 1: {odds['1']} | MS X: {odds['X']} | MS 2: {odds['2']}\n\n"
+    card += f"⚽ **Alt / Üst Oranları ve Yüzdeleri:**\n"
+    card += f"• 1.5 Alt: {odds['u15']} ({u15_p}) | 1.5 Üst: {odds['o15']} ({o15_p})\n"
+    card += f"• 2.5 Alt: {odds['u25']} ({u25_p}) | 2.5 Üst: {odds['o25']} ({o25_p})\n"
+    card += f"• 3.5 Alt: {odds['u35']} ({u35_p}) | 3.5 Üst: {odds['o35']} ({o35_p})\n"
     card += "───────────────────\n"
     return card
 
@@ -193,7 +200,7 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API anahtarı eksik.")
         return
 
-    sent_msg = await update.message.reply_text("⏳ Gelecek 20 oranlı maç filtreleniyor...")
+    sent_msg = await update.message.reply_text("⏳ Gelecek 10 oranlı maç filtreleniyor...")
     try:
         events = fetch_data()
         if not events:
@@ -204,30 +211,16 @@ async def maclar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        target_events = events[:20]
-        chunks = [target_events[i:i + 5] for i in range(0, len(target_events), 5)]
-
-        # İlk 5 maç
-        first_msg = f"⚽ **GELECEK MAÇLAR (1-5)** ⚽\n───────────────────\n\n"
-        for m in chunks[0]:
-            first_msg += build_card(m) + "\n"
+        msg = f"⚽ **GELECEK 10 ORANLI MAÇ VE ANALİZ** ⚽\n───────────────────\n\n"
+        for m in events[:10]:
+            msg += build_card(m) + "\n"
         
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_msg.message_id,
-            text=first_msg,
+            text=msg,
             parse_mode="Markdown"
         )
-
-        # Kalan parçalar (6-20 arası)
-        ranges = ["(6-10)", "(11-15)", "(16-20)"]
-        for idx, chunk in enumerate(chunks[1:], start=0):
-            if idx < len(ranges):
-                part_msg = f"⚽ **GELECEK MAÇLAR {ranges[idx]}** ⚽\n───────────────────\n\n"
-                for m in chunk:
-                    part_msg += build_card(m) + "\n"
-                await update.message.reply_text(part_msg, parse_mode="Markdown")
-
     except Exception as e:
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
@@ -262,28 +255,16 @@ async def ara(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        target_matches = matches[:20]
-        chunks = [target_matches[i:i + 5] for i in range(0, len(target_matches), 5)]
-
-        first_msg = f"🔎 **ARAMA: {query.upper()} (1-5)**\n───────────────────\n\n"
-        for m in chunks[0]:
-            first_msg += build_card(m) + "\n"
+        msg = f"🔎 **ARAMA: {query.upper()}**\n───────────────────\n\n"
+        for m in matches[:10]:
+            msg += build_card(m) + "\n"
             
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_msg.message_id,
-            text=first_msg,
+            text=msg,
             parse_mode="Markdown"
         )
-
-        ranges = ["(6-10)", "(11-15)", "(16-20)"]
-        for idx, chunk in enumerate(chunks[1:], start=0):
-            if idx < len(ranges):
-                part_msg = f"🔎 **ARAMA: {query.upper()} {ranges[idx]}**\n───────────────────\n\n"
-                for m in chunk:
-                    part_msg += build_card(m) + "\n"
-                await update.message.reply_text(part_msg, parse_mode="Markdown")
-
     except Exception as e:
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
