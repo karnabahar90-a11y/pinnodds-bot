@@ -5,7 +5,6 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Logging ayarları
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -14,7 +13,6 @@ logging.basicConfig(
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PINNODDS_API_KEY = os.getenv("PINNODDS_API_KEY")
 
-# Render port doğrulaması için Flask uygulaması
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -23,7 +21,6 @@ def health_check():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    # Flask sunucusunu sessizce arka planda çalıştır
     app_flask.run(host="0.0.0.0", port=port, use_reloader=False)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -45,7 +42,8 @@ async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Pinnacle Düşen Oran Verileri Çekiliyor...")
     try:
         import requests
-        url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=2&max_age_sec=10800"
+        # FİLTRELER ESNETİLDİ: min_drop_pct=0.5 (Yarım puanlık düşüş) ve max_age_sec=86400 (Son 24 saat)
+        url = "https://pinnodds.com/api/drops?mode=prematch&sport_id=1&min_drop_pct=0.5&max_age_sec=86400"
         headers = {"x-portal-apikey": PINNODDS_API_KEY}
         
         response = requests.get(url, headers=headers, timeout=10)
@@ -53,14 +51,21 @@ async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response.status_code == 200:
             data = response.json()
             
-            if not data or not isinstance(data, list):
-                await update.message.reply_text("⚠️ Şu anda aktif düşen oran verisi bulunamadı.")
+            # Eğer veri doğrudan liste değil de dict içinde geliyorsa güvenli şekilde çıkar
+            if isinstance(data, dict):
+                data = data.get("data", data.get("drops", []))
+            
+            if not data or len(data) == 0:
+                await update.message.reply_text("⚠️ Şu an için son 24 saatte %0.5'ten fazla düşen oran yok.")
                 return
 
-            msg = "⚽ **DÜŞEN ORANLAR (Prematch Drops)** ⚽\n\n"
-            for item in data[:8]:  # İlk 8 maçı göster
-                home = item.get("home_team", item.get("home", "Ev Sahibi"))
-                away = item.get("away_team", item.get("away", "Deplasman"))
+            msg = "⚽ **DÜŞEN ORANLAR (Son 24 Saat)** ⚽\n\n"
+            for item in data[:10]:  # İlk 10 maçı göster
+                # API takım isimlerini "event" objesi içinde gönderiyorsa diye güvenlik eklendi
+                event_data = item.get("event", item)
+                
+                home = event_data.get("home_team", event_data.get("home", "Ev Sahibi"))
+                away = event_data.get("away_team", event_data.get("away", "Deplasman"))
                 drop_pct = item.get("drop_pct", "0")
                 to_val = item.get("to", "-")
                 
@@ -69,7 +74,7 @@ async def oranlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"⚠️ API Hatası ({response.status_code}): Lütfen API anahtarını kontrol edin.")
+            await update.message.reply_text(f"⚠️ API Hatası ({response.status_code}).")
     except Exception as e:
         await update.message.reply_text(f"❌ Bağlantı hatası: {str(e)}")
 
@@ -78,11 +83,9 @@ def main():
         print("HATA: TELEGRAM_BOT_TOKEN bulunamadı!")
         return
 
-    # 1. Flask'ı arka planda bir thread içinde başlatıyoruz
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # 2. Telegram Botunu ANA THREAD üzerinde çalıştırıyoruz
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("durum", durum))
